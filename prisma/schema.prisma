@@ -1,0 +1,157 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum NotificationType {
+  MESSAGE
+  MENTION
+  GROUP_INVITE
+}
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  username       String         @unique
+  passwordHash   String
+  displayName    String?
+  avatarUrl      String?
+  bio            String?
+  isOnline       Boolean        @default(false)
+  lastSeenAt     DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  memberships    ConversationMember[]
+  sentMessages   Message[]      @relation("MessageSender")
+  messageReads   MessageRead[]
+  notifications  Notification[]
+  typingStatuses TypingStatus[]
+  sessions       Session[]
+}
+
+// Store only a hash of a revocable authentication/session token.
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Conversation {
+  id          String                  @id @default(cuid())
+  type        ConversationType
+  title       String?
+  imageUrl    String?
+  // Canonical sorted pair of user IDs; set for direct conversations only.
+  directKey   String?                 @unique
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+  members     ConversationMember[]
+  messages    Message[]
+  typing      TypingStatus[]
+
+  @@index([type, updatedAt])
+}
+
+model ConversationMember {
+  conversationId String
+  userId         String
+  role           MemberRole @default(MEMBER)
+  joinedAt       DateTime   @default(now())
+  leftAt         DateTime?
+  mutedUntil     DateTime?
+  lastReadAt     DateTime?
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@index([userId, leftAt])
+}
+
+model Message {
+  id             String        @id @default(cuid())
+  conversationId String
+  senderId       String
+  body           String?
+  // Client supplied key for safely retrying sends after a lost acknowledgement.
+  clientId       String?
+  // Supports attachments and structured message payloads.
+  attachments    Json?
+  replyToId      String?
+  createdAt      DateTime      @default(now())
+  editedAt       DateTime?
+  deletedAt      DateTime?
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User          @relation("MessageSender", fields: [senderId], references: [id], onDelete: Restrict)
+  replyTo        Message?      @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]     @relation("MessageReplies")
+  reads          MessageRead[]
+  notifications  Notification[]
+
+  @@index([conversationId, createdAt, id])
+  @@index([senderId, createdAt])
+  @@unique([conversationId, senderId, clientId])
+}
+
+// Per-recipient receipt, allowing sent/delivered/read state to be tracked.
+model MessageRead {
+  messageId String
+  userId    String
+  deliveredAt DateTime?
+  readAt    DateTime?
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId, readAt])
+}
+
+// Ephemeral typing state; update expiresAt and periodically remove stale rows.
+model TypingStatus {
+  conversationId String
+  userId         String
+  expiresAt      DateTime
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@index([expiresAt])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  messageId String?
+  payload   Json?
+  createdAt DateTime         @default(now())
+  readAt    DateTime?
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message   Message?         @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt, createdAt])
+}
